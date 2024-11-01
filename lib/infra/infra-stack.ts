@@ -29,6 +29,10 @@ import {
   MachineImage,
   SubnetType,
   UserData,
+  SecurityGroup,
+  Peer,
+  Port,
+  IPeer
 } from 'aws-cdk-lib/aws-ec2';
 import {
   ApplicationListener,
@@ -390,7 +394,8 @@ export class InfraStack extends Stack {
       this.instanceRole = new Role(this, 'instanceRole', {
         managedPolicies: [ManagedPolicy.fromAwsManagedPolicyName('AmazonEC2ReadOnlyAccess'),
           ManagedPolicy.fromAwsManagedPolicyName('CloudWatchAgentServerPolicy'),
-          ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore')],
+          ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore'),
+          ManagedPolicy.fromAwsManagedPolicyName('AmazonS3ReadOnlyAccess')],
         assumedBy: new ServicePrincipal('ec2.amazonaws.com'),
       });
     } else {
@@ -431,10 +436,15 @@ export class InfraStack extends Stack {
     this.elbType = props?.loadBalancerType ?? LoadBalancerType[(loadBalancerTypeStr).toUpperCase() as keyof typeof LoadBalancerType];
     switch (this.elbType) {
     case LoadBalancerType.NLB:
+      const securityGroup = new SecurityGroup(this, "osbenchLB", { vpc: props.vpc });
+      securityGroup.addIngressRule(Peer.ipv4('172.31.0.0/16'), Port.allTraffic());
+      // com.amazonaws.us-east-2.ec2-instance-connect
+      securityGroup.addIngressRule(Peer.prefixList("pl-03915406641cb1f53"), Port.allTraffic());
       this.elb = new NetworkLoadBalancer(this, 'clusterNlb', {
         vpc: props.vpc,
         internetFacing: (!this.isInternal),
         crossZoneEnabled: true,
+        securityGroups: [securityGroup]
       });
       break;
     case LoadBalancerType.ALB:
@@ -899,7 +909,7 @@ export class InfraStack extends Stack {
       // eslint-disable-next-line max-len
       InitCommand.shellCommand('set -ex;/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s'),
       InitCommand.shellCommand('set -ex; sudo echo "vm.max_map_count=262144" >> /etc/sysctl.conf;sudo sysctl -p'),
-      InitCommand.shellCommand(`set -ex;mkdir opensearch; curl -L ${this.distributionUrl} -o opensearch.tar.gz;`
+      InitCommand.shellCommand(`set -ex;mkdir opensearch; aws s3 cp ${this.distributionUrl} opensearch.tar.gz;`
           + 'tar zxf opensearch.tar.gz -C opensearch --strip-components=1; chown -R ec2-user:ec2-user opensearch;', {
         cwd: currentWorkDir,
         ignoreErrors: false,
